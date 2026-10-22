@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>VouchGuard — on-chain vouch verification</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: ui-monospace, monospace; background: #0b0e14; color: #e6e6e6; max-width: 640px; margin: 40px auto; padding: 0 16px; }
+  h1 { font-size: 18px; } h1 span { color: #7c9cff; }
+  input { width: 100%; box-sizing: border-box; padding: 10px; margin: 6px 0; background: #131722; border: 1px solid #232a3a; color: #e6e6e6; border-radius: 6px; }
+  button { padding: 10px 16px; background: #2f61f5; color: #fff; border: 0; border-radius: 6px; cursor: pointer; margin-bottom: 14px; }
+  button[disabled] { opacity: .5; }
+  pre { background: #131722; border: 1px solid #232a3a; padding: 12px; border-radius: 6px; white-space: pre-wrap; }
+  small { color: #8a93a6; }
+  .ok { color: #6ee787; } .bad { color: #ff7b72; }
+</style>
+<script type="module">
+  import { createClient, createAccount } from "https://esm.sh/genlayer-js@0.9.0";
+  const BRADBURY = { id: 4221, name: "GenLayer Bradbury Testnet",
+    nativeCurrency: { name: "GEN", symbol: "GEN", decimals: 18 },
+    rpcUrls: { default: { http: ["https://rpc-bradbury.genlayer.com"] } } };
+  const client = createClient({ chain: BRADBURY });
+  window.check = async () => {
+    const out = document.getElementById("out");
+    const addr = document.getElementById("contract").value.trim();
+    const url = document.getElementById("url").value.trim();
+    const handle = document.getElementById("handle").value.trim();
+    out.textContent = "querying chain…"; out.className = "";
+    try {
+      const res = await client.readContract({ address: addr, functionName: "get_check", args: [url] });
+      const stats = await client.readContract({ address: addr, functionName: "get_handle_stats", args: [handle] });
+      const v = res.verdict === "verified";
+      out.innerHTML = `<span class="${v ? "ok" : "bad"}">verdict: ${res.verdict === "verified" ? "VERIFIED ✔" : res.verdict.toUpperCase()}</span>\nquote: ${res.quote || "-"}\nhandle stats: ${stats.checks} check(s), ${stats.verified} verified, clean=${stats.clean}`;
+    } catch (e) { out.textContent = "error: " + (e.message || e); out.className = "bad"; }
+  };
+</script>
+</head>
+<body>
+  <h1>⚖ <span>VouchGuard</span> — on-chain vouch verification</h1>
+  <small>Paste a proof URL (e.g. an X status that supposedly contains a vouch) and the handle that supposedly wrote it. The verdict comes from GenLayer consensus — validators fetch the page, an LLM extracts the evidence, and it's agreed with the equivalence principle.</small>
+  <input id="contract" placeholder="deployed contract address (0x…)" />
+  <input id="url" placeholder="claim / proof URL (https://x.com/handle/status/…)" />
+  <input id="handle" placeholder="expected handle" />
+  <button onclick="check()">read verdict</button>
+  <pre id="out">idle</pre>
+  <small>Submit new checks from the CLI: <code>node cli/vouchguard.mjs &lt;contract&gt; check &lt;url&gt; &lt;handle&gt;</code></small>
+</body>
+</html>

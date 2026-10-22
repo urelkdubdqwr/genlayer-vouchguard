@@ -22,7 +22,15 @@ verdict.
 ## Repo layout
 
 - `contracts/vouchguard.py` — the Intelligent Contract
-- `cli/vouchguard.mjs` — backend client (Node + `genlayer-js`): submit checks, read verdicts
+- `cli/vouchguard.mjs` — backend client (Node + `genlayer-js`): submit checks, read verdicts, handle stats
+- `ui/index.html` — single-file web UI: paste a claim URL + handle, read the on-chain verdict
+- `tests/cli.test.mjs` — CLI unit tests (`npm test`, `node:test`, zero deps)
+
+### v2: handle reputation
+
+Every check updates an on-chain aggregate per handle — `get_handle_stats(handle)`
+returns total checks, verified count and a `clean` flag. Communities can ask the
+chain "has this handle ever faked a vouch?" instead of re-checking each claim.
 
 ## Deployed
 
