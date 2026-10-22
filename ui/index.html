@@ -28,10 +28,10 @@
     const handle = document.getElementById("handle").value.trim();
     out.textContent = "querying chain…"; out.className = "";
     try {
-      const res = await client.readContract({ address: addr, functionName: "get_check", args: [url] });
+      const res = await client.readContract({ address: addr, functionName: "get_check", args: [url, handle] });
       const stats = await client.readContract({ address: addr, functionName: "get_handle_stats", args: [handle] });
       const v = res.verdict === "verified";
-      out.innerHTML = `<span class="${v ? "ok" : "bad"}">verdict: ${res.verdict === "verified" ? "VERIFIED ✔" : res.verdict.toUpperCase()}</span>\nquote: ${res.quote || "-"}\nhandle stats: ${stats.checks} check(s), ${stats.verified} verified, clean=${stats.clean}`;
+      out.innerHTML = `<span class="${v ? "ok" : "bad"}">verdict: ${res.verdict === "verified" ? "VERIFIED ✔" : res.verdict.toUpperCase()}</span>\npage author: @${res.page_author || "?"} · url handle: @${res.url_handle || "?"} · attempts: ${res.attempts}\nquote: ${res.quote || "-"}\nhandle stats: ${stats.attempts} attempt(s), ${stats.verified} verified, clean=${stats.clean}`;
     } catch (e) { out.textContent = "error: " + (e.message || e); out.className = "bad"; }
   };
 </script>
