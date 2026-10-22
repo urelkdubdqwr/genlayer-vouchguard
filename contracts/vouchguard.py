@@ -78,6 +78,31 @@ def _quote_in_page(quote: str, page_text: str) -> bool:
     return bool(q) and q in _norm_text(page_text)
 
 
+def _decide(
+    handle: str,
+    url_handle: str,
+    page_author: str,
+    found: bool,
+    quote: str,
+    quote_in_page: bool,
+) -> tuple:
+    """Deterministic verdict logic (pure, unit-tested).
+
+    Order matters: authorship is authenticated BEFORE content, so a page that
+    belongs to someone else can never be verified for the claimed handle, and
+    a quote that is not verbatim in the page can never produce "verified".
+    """
+    if page_author and page_author != handle:
+        return AUTHOR_MISMATCH, ""
+    if url_handle and url_handle != handle:
+        return AUTHOR_MISMATCH, ""
+    if not page_author and not url_handle:
+        return UNVERIFIABLE, ""
+    if found and quote_in_page and quote:
+        return VERIFIED, quote[:1000]
+    return NOT_FOUND, ""
+
+
 class VouchGuard(gl.Contract):
     """On-chain vouch verification for GenLayer.
 
@@ -199,34 +224,16 @@ be perfectly parsable by a JSON parser without errors.
             self.checks[key] = c
 
         url_handle = _url_handle(claim_url)
-        author_page = _norm_handle(str(c.page_author))
-        c.url_handle = url_handle
-
         res = self._analyze(claim_url, c.handle)
+        c.url_handle = url_handle
         c.page_author = _norm_handle(str(res.get("author_raw", "")))
         found = bool(res.get("found"))
         quote = str(res.get("quote", ""))
         quote_in_page = bool(res.get("quote_in_page"))
 
-        if c.page_author and c.page_author != c.handle:
-            # The page itself attributes authorship to someone else.
-            c.verdict = AUTHOR_MISMATCH
-            c.quote = ""
-        elif url_handle and url_handle != c.handle:
-            # The URL path carries a different handle than claimed.
-            c.verdict = AUTHOR_MISMATCH
-            c.quote = ""
-        elif not c.page_author and not url_handle:
-            # No structural authorship evidence at all: cannot verify.
-            c.verdict = UNVERIFIABLE
-            c.quote = ""
-        elif found and quote_in_page and quote:
-            # Authorship confirmed AND quote verbatim in the fetched page.
-            c.verdict = VERIFIED
-            c.quote = quote[:1000]
-        else:
-            c.verdict = NOT_FOUND
-            c.quote = ""
+        c.verdict, c.quote = _decide(
+            c.handle, url_handle, c.page_author, found, quote, quote_in_page
+        )
 
         self.total += 1
         s = self.stats.get_or_insert_default(c.handle)
