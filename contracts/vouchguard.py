@@ -7,6 +7,13 @@ from genlayer import *
 
 @allow_storage
 @dataclass
+class HandleStat:
+    handles_checked: u256  # total checks submitted against this handle
+    verified: u256  # how many claims resolved to "verified"
+
+
+@allow_storage
+@dataclass
 class Check:
     claim_url: str
     expected_handle: str
@@ -26,6 +33,8 @@ class VouchGuard(gl.Contract):
     """
 
     checks: TreeMap[str, Check]
+    stats: TreeMap[str, HandleStat]
+    total: u256
 
     def __init__(self):
         pass
@@ -74,6 +83,11 @@ perfectly parsable by a JSON parser without errors.
         c = self.checks[claim_url]
         c.verdict = "verified" if res.get("found") else "not_found"
         c.quote = str(res.get("quote", ""))[:1000]
+        self.total += 1
+        s = self.stats.get_or_insert_default(expected_handle.lower())
+        s.handles_checked += 1
+        if c.verdict == "verified":
+            s.verified += 1
 
     @gl.public.view
     def get_check(self, claim_url: str) -> dict:
@@ -89,4 +103,14 @@ perfectly parsable by a JSON parser without errors.
 
     @gl.public.view
     def total_checks(self) -> int:
-        return len(self.checks)
+        return self.total
+
+    @gl.public.view
+    def get_handle_stats(self, handle: str) -> dict:
+        s = self.stats.get(handle.lower(), HandleStat(0, 0))
+        return {
+            "handle": handle.lower(),
+            "checks": s.handles_checked,
+            "verified": s.verified,
+            "clean": s.handles_checked > 0 and s.verified == s.handles_checked,
+        }
