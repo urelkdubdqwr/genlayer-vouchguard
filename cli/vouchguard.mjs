@@ -22,10 +22,12 @@ try {
 }
 const { address, cmd } = args;
 
-const key = readFileSync(
-  process.env.GENLAYER_KEY_FILE || `${process.env.HOME}/wallets/key227`,
-  "utf8",
-).trim();
+const keyFile = process.env.GENLAYER_KEY_FILE;
+if (!keyFile) {
+  console.error("set GENLAYER_KEY_FILE to a hex private key file");
+  process.exit(1);
+}
+const key = readFileSync(keyFile, "utf8").trim();
 const account = createAccount(key.startsWith("0x") ? key : `0x${key}`);
 const client = createClient({ chain: BRADBURY, account });
 

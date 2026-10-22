@@ -1,0 +1,9 @@
+flowchart LR
+    D['User'] -->|claim URL + handle| C['CLI ui/index.html']
+    C -->|writeContract submit_check| K['VouchGuard IC on GenLayer']
+    K -->|gl.get_webpage| W['Public page e.g. X status']
+    K -->|gl.exec_prompt| L['LLM extracts evidence']
+    K -->|gl.eq_principle_strict_eq| V['Validator consensus']
+    V -->|verdict + quote| S['Immutable on-chain state']
+    S -->|get_check| R['Anyone reads verdict']
+    S -->|get_handle_stats| R2['Handle reputation: checks / verified / clean']
