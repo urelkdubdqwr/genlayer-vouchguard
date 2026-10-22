@@ -76,6 +76,45 @@ def test_quote_in_page():
     assert vg._quote_in_page(page, page)
 
 
+def test_decide_closes_steward_objections():
+    """Each case maps to one objection in the steward's rejection."""
+    V, NF, AM, UV = (
+        vg.VERIFIED,
+        vg.NOT_FOUND,
+        vg.AUTHOR_MISMATCH,
+        vg.UNVERIFIABLE,
+    )
+    q = "I vouch for @dev, we shipped together for a year."
+    good = dict(handle="alice", url_handle="alice", page_author="alice",
+                found=True, quote=q, quote_in_page=True)
+
+    # baseline: real vouch by the claimed author
+    assert vg._decide(**good) == (V, q)
+
+    # (2) authorship not authenticated: the page belongs to someone else ->
+    # a quote/mention of @alice inside bob's page must never verify for alice.
+    spoof = dict(good, page_author="bob")
+    assert vg._decide(**spoof) == (AM, "")
+    # URL carries a different handle than claimed (claiming someone's status)
+    assert vg._decide(**dict(good, url_handle="bob")) == (AM, "")
+    # no structural authorship at all (plain blog page) -> refuse to verify
+    assert vg._decide(**dict(good, page_author="", url_handle="")) == (UV, "")
+
+    # (3) quote not verbatim in the fetched page (LLM hallucination) ->
+    # found=true is NOT enough.
+    assert vg._decide(**dict(good, quote_in_page=False)) == (NF, "")
+    assert vg._decide(**dict(good, quote="")) == (NF, "")
+    assert vg._decide(**dict(good, found=False)) == (NF, "")
+
+    # (1) keying: same URL checked against a different handle is an
+    # independent record (different key), so no first-caller binding.
+    assert vg._norm_url("https://x.com/alice/status/1") + "|" + vg._norm_handle("@alice") != \
+           vg._norm_url("https://x.com/alice/status/1") + "|" + vg._norm_handle("@bob")
+    # retry of a non-verified verdict reuses the same key (attempts increment)
+    assert vg._norm_url("https://x.com/alice/status/1") + "|" + vg._norm_handle("alice") == \
+           vg._norm_url("https://X.com/alice/status/1/") + "|" + vg._norm_handle("@Alice")
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
