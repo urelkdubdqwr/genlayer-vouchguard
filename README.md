@@ -19,15 +19,22 @@ The verdict lands in contract state as immutable history: no screenshots to edit
   check that came back `not_found` / `author_mismatch` / `unverifiable` can be
   retried (each attempt is counted). Only a **`verified` verdict is final** —
   so a first caller can never permanently bind a page to the wrong handle.
-- **Authorship is authenticated structurally, in two layers:**
-  1. the handle embedded in the page URL (`x.com/<handle>/status/...`) must
+- **Verified requires AUTHENTICATED authorship, from three conditions (all of
+  them, no exceptions):**
+  1. the claim page must live on the X/Twitter platform itself (`x.com` /
+     `twitter.com`). A self-declared author in the metadata of an arbitrary
+     or spoofed domain — or of a lookalike host like `x.com.evil.net` — can
+     never verify anything;
+  2. the handle embedded in the page URL (`x.com/<handle>/status/...`) must
      equal the claimed handle;
-  2. the author the page's *own metadata* attributes the post to (`<title>`
-     "… on X", `twitter:creator` / `author` meta, profile & JSON-LD links) is
-     extracted by an LLM **independently of the claim** and must also equal the
-     claimed handle.
-  A mismatch stores an `author_mismatch` verdict as on-chain evidence of the
-  failed binding; a page with no authorship evidence at all is `unverifiable`.
+  3. the author the page's own **HEAD** metadata attributes the post to
+     (`<title>` "… on X", `twitter:creator` / `author` meta, profile &
+     JSON-LD links — extracted **only from the `<head>` region**, never from
+     body text) must ALSO equal the claimed handle.
+  Neither signal alone is sufficient. A contradicting signal stores an
+  `author_mismatch` verdict as on-chain evidence of the failed binding; a
+  missing signal stores `unverifiable`. Both are checked BEFORE any content
+  is judged.
 - **The quote must be in the page.** The contract renders the page twice
   (`mode="html"` for metadata, `mode="text"` for content). The LLM that flags a
   vouch must return the exact supporting sentence, and a deterministic
@@ -37,20 +44,33 @@ The verdict lands in contract state as immutable history: no screenshots to edit
   the normalized JSON (author, found, quote, `quote_in_page`), so the verdict
   is consensus output, not one node's opinion.
 - Verdicts: `verified` / `not_found` / `author_mismatch` / `unverifiable`.
-  Every attempt also bumps a per-handle aggregate, so
-  `get_handle_stats(handle)` answers "has this handle ever faked a vouch?"
+  Reputation is **positive-only**: `get_handle_stats(handle)` counts solely
+  authenticated verified vouches. Failed submissions — no matter who fires
+  them or how many — never touch a handle's aggregate, so an arbitrary caller
+  cannot make another handle look "unclean" by spamming checks destined to
+  fail. Failures live in per-claim history (retryable, with an incrementing
+  attempt counter) and never subtract from anyone.
 
-## v3 security model (what changed vs v2)
+## v4 security model (steward round 2 — what changed vs v3)
 
-| Steward objection (v2 rejection) | v3 mechanism |
+| Steward objection (v3 review, 2026-10-23) | v4 mechanism |
+| --- | --- |
+| arbitrary callers could make another handle appear unclean through failed submissions | reputation is **positive-only**: `_stat_delta(verdict)` contributes `1` only for `verified`, so `not_found` / `author_mismatch` / `unverifiable` never touch the per-handle aggregate (`HandleStat` counts verified vouches alone, `clean` is derived from positive evidence only). Failures stay in per-claim history with their own attempt counter. |
+| a verified result must require authenticated authorship, not *either* an X/Twitter URL path *or* self-declared metadata from an arbitrary domain | `_decide()` now gates on the platform host **and** requires BOTH structural signals to be present and equal to the claimed handle: URL-path handle **and** HEAD-metadata author. An arbitrary or lookalike host (`x.com.evil.net`) returns `unverifiable`; missing either signal returns `unverifiable`; a contradicting signal returns `author_mismatch`. Authorship extraction reads only the `<head>` region (`_head_region`), so body text cannot spoof metadata. |
+| add runnable tests for third-party reputation poisoning, each missing authorship signal, and a spoofed-domain metadata case | `tests/contract.test.py` — 10 pure-function tests: `test_third_party_poisoning_cannot_stain_another_handle`, `test_verified_requires_both_authorship_signals` (each missing signal), `test_spoofed_domain_metadata_never_verifies`, plus `_stat_delta`, `_head_region` and the existing helper/retry tests. |
+| correct the declared Python and npm test commands so the tests actually execute | the Python suite no longer depends on CPython ≥3.14 lazy annotations (the `genlayer` stub now defines `u256` / `TreeMap`, which previously raised `NameError` on 3.8–3.13) and runs on any CPython ≥3.8; `npm test` targets `tests/cli.test.mjs` explicitly (`node --test`, node ≥18) instead of an implicit directory scan. |
+
+### v3 and earlier
+
+| Objection | Mechanism |
 | --- | --- |
 | URL-only uniqueness lets the first caller permanently bind a page to the wrong handle | results keyed by `(normalized URL, handle)`; only *verified* verdicts are immutable, everything else is retryable and attempt-counted |
-| contract does not authenticate authorship | dual structural check: URL-path handle + page-metadata author extracted independently of the claim; either mismatch → `author_mismatch`, no metadata → `unverifiable` |
+| contract does not authenticate authorship | see the two structural signals above — both now mandatory |
 | extracted quote is not verified against the fetched page | deterministic `quote ∈ page_text` containment gate before any verdict can become `verified` |
 
-Decision logic lives in one pure, unit-tested function (`_decide`), and the
-same rules are mirrored client-side in `cli/lib.mjs` so bad claims are refused
-before gas is spent.
+Decision logic lives in pure, unit-tested functions (`_decide`, `_stat_delta`,
+`_head_region`, `_url_handle`), and the same authorship rules are mirrored
+client-side in `cli/lib.mjs` so bad claims are refused before gas is spent.
 
 ## Quickstart
 
