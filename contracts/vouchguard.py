@@ -1,4 +1,5 @@
-# { "Depends": "py-genlayer:test" }
+# v0.2.16
+# { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
 
 import json
 from dataclasses import dataclass
@@ -257,7 +258,7 @@ be perfectly parsable by a JSON parser without errors.
             if existing.verdict == VERIFIED:
                 # A verified verdict is final; re-binding a verified page to
                 # another check is pointless, other handles stay independent.
-                raise Exception("Already verified for this handle")
+                raise gl.vm.UserError("Already verified for this handle")
             # notFound/author_mismatch/unverifiable are RETRYABLE: a first
             # caller can never permanently bind a page to a wrong handle.
             c = existing
@@ -301,7 +302,7 @@ be perfectly parsable by a JSON parser without errors.
     def get_check(self, claim_url: str, expected_handle: str) -> dict:
         key = _norm_url(claim_url) + "|" + _norm_handle(expected_handle)
         if key not in self.checks:
-            raise Exception("Unknown claim")
+            raise gl.vm.UserError("Unknown claim")
         c = self.checks[key]
         return {
             "claim_url": c.claim_url,
