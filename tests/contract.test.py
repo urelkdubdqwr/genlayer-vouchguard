@@ -14,6 +14,10 @@ root = pathlib.Path(__file__).resolve().parent.parent
 
 
 class _GL:
+    class vm:
+        class UserError(Exception):
+            pass
+
     class Contract:
         pass
 
