@@ -4,14 +4,11 @@
 //        node cli/vouchguard.mjs <contract> read  <claim_url> <handle>
 import { readFileSync } from "node:fs";
 import { createClient, createAccount } from "genlayer-js";
+import { studionet, testnetBradbury } from "genlayer-js/chains";
 import { parseArgs, normalizeHandle, urlHandle } from "./lib.mjs";
 
-const BRADBURY = {
-  id: 4221,
-  name: "GenLayer Bradbury Testnet",
-  nativeCurrency: { name: "GEN", symbol: "GEN", decimals: 18 },
-  rpcUrls: { default: { http: ["https://rpc-bradbury.genlayer.com"] } },
-};
+const CHAINS = { studio: studionet, bradbury: testnetBradbury };
+const chain = CHAINS[process.env.VOUCHGUARD_CHAIN || "bradbury"];
 
 let args;
 try {
@@ -29,7 +26,7 @@ if (!keyFile) {
 }
 const key = readFileSync(keyFile, "utf8").trim();
 const account = createAccount(key.startsWith("0x") ? key : `0x${key}`);
-const client = createClient({ chain: BRADBURY, account });
+const client = createClient({ chain, account });
 
 const handle = normalizeHandle(args.handle);
 // Client-side mirror of the contract's verdict gate: refuse to even submit a
