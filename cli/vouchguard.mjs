@@ -33,11 +33,17 @@ const client = createClient({ chain: BRADBURY, account });
 
 const handle = normalizeHandle(args.handle);
 // Client-side mirror of the contract's verdict gate: refuse to even submit a
-// claim whose URL structurally belongs to a different handle.
+// claim whose authorship cannot be authenticated before spending gas.
 const uh = urlHandle(args.url);
-if (uh && uh !== handle) {
-  console.error(`author_mismatch: URL belongs to @${uh}, claim says @${handle}`);
-  process.exit(2);
+if (cmd === "check") {
+  if (!uh) {
+    console.error("unverifiable: authorship must be authenticated on x.com/twitter.com — metadata on an arbitrary domain can never verify");
+    process.exit(2);
+  }
+  if (uh !== handle) {
+    console.error(`author_mismatch: URL belongs to @${uh}, claim says @${handle}`);
+    process.exit(2);
+  }
 }
 
 if (cmd === "read") {

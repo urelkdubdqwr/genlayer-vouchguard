@@ -39,10 +39,13 @@ test("parseArgs: rejects bad contract address and unknown cmd", () => {
   assert.throws(() => parseArgs([addr, "yolo"]));
 });
 
-// The client mirrors the contract's authorship gate: a URL whose path carries
-// another handle is refused before spending gas.
+// The client mirrors the contract's authorship gate before spending gas:
+// the URL must live on the X/Twitter platform AND carry the claimed handle.
 test("client-side authorship gate", () => {
   const uh = urlHandle("https://x.com/bob/status/1");
   assert.notEqual(uh, normalizeHandle("@alice"));
   assert.equal(uh, normalizeHandle("@bob"));
+  // host gate: arbitrary (or lookalike) domains can never authenticate
+  assert.equal(urlHandle("https://evil-example.net/alice/vouch"), "");
+  assert.equal(urlHandle("https://x.com.evil.net/alice/status/1"), "");
 });

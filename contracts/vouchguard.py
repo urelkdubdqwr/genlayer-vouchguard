@@ -10,12 +10,13 @@ NOT_FOUND = "not_found"
 AUTHOR_MISMATCH = "author_mismatch"
 UNVERIFIABLE = "unverifiable"
 
+X_HOSTS = ("x.com", "twitter.com", "mobile.x.com", "mobile.twitter.com")
+
 
 @allow_storage
 @dataclass
 class HandleStat:
-    attempts: u256  # total checks submitted for this handle
-    verified: u256  # how many attempts resolved to "verified"
+    verified: u256  # authenticated, verified vouches only (positive-only reputation)
 
 
 @allow_storage
@@ -23,8 +24,9 @@ class HandleStat:
 class Check:
     claim_url: str
     handle: str  # normalized expected handle (no @, lowercase)
+    url_host: str  # normalized host of the claim URL
     url_handle: str  # handle embedded in the URL path, "" if not parseable
-    page_author: str  # handle the PAGE ITSELF attributes authorship to (metadata)
+    page_author: str  # author declared by the page's own HEAD metadata, "" if absent
     verdict: str  # verified | not_found | author_mismatch | unverifiable
     quote: str  # exact quote from the page (only when verified)
     attempts: u256
@@ -39,6 +41,11 @@ def _norm_url(url: str) -> str:
     return u.rstrip("/").lower()
 
 
+def _host(url: str) -> str:
+    u = _norm_url(url)
+    return u.split("/", 1)[0] if "/" in u else u
+
+
 def _norm_handle(h: str) -> str:
     """Normalize a handle: strip @, protocol, profile-URL forms, lowercase."""
     h = (h or "").strip().lstrip("@").lower()
@@ -48,14 +55,15 @@ def _norm_handle(h: str) -> str:
 
 
 def _url_handle(url: str) -> str:
-    """Handle embedded in a status/profile URL path.
+    """Handle embedded in a status/profile URL path on the X/Twitter platform.
 
     https://x.com/<handle>/status/123 -> <handle>
-    Returns "" when the URL does not carry a handle path.
+    Returns "" when the URL does not live on x.com/twitter.com or carries no
+    handle path.
     """
     u = _norm_url(url)
     host = u.split("/", 1)[0] if "/" in u else u
-    if host not in ("x.com", "twitter.com", "mobile.x.com", "mobile.twitter.com"):
+    if host not in X_HOSTS:
         return ""
     path = u[len(host):].strip("/")
     if not path:
@@ -78,8 +86,37 @@ def _quote_in_page(quote: str, page_text: str) -> bool:
     return bool(q) and q in _norm_text(page_text)
 
 
+def _head_region(html: str) -> str:
+    """Restrict authorship extraction to the <head> region.
+
+    Authorship must come from structural metadata the platform/page owner
+    emits, not from body text any arbitrary page can freely write.
+    """
+    h = html or ""
+    low = h.lower()
+    start = low.find("<head")
+    if start < 0:
+        return ""
+    end = low.find("</head>", start)
+    if end >= 0:
+        return h[start:end]
+    return h[start:start + 20000]
+
+
+def _stat_delta(verdict: str) -> u256:
+    """Positive-only reputation.
+
+    A failed check (not_found / author_mismatch / unverifiable) submitted by
+    an arbitrary caller must never subtract from a handle's standing, so only
+    a verified verdict contributes to the aggregate. Third parties cannot
+    make another handle look "unclean" through failed submissions.
+    """
+    return 1 if verdict == VERIFIED else 0
+
+
 def _decide(
     handle: str,
+    url_host: str,
     url_handle: str,
     page_author: str,
     found: bool,
@@ -88,15 +125,27 @@ def _decide(
 ) -> tuple:
     """Deterministic verdict logic (pure, unit-tested).
 
-    Order matters: authorship is authenticated BEFORE content, so a page that
-    belongs to someone else can never be verified for the claimed handle, and
-    a quote that is not verbatim in the page can never produce "verified".
+    A verified result requires AUTHENTICATED authorship — the two structural
+    signals together, on the platform itself:
+      1. platform gate: the page must live on x.com/twitter.com. Self-declared
+         metadata from an arbitrary domain can never verify anything (a
+         spoofed site can simply write twitter:creator=anything).
+      2. URL-path handle must equal the claimed handle, AND
+      3. the author the page's own HEAD metadata attributes the post to must
+         also equal the claimed handle.
+    Neither signal alone is sufficient. A contradicting signal is stored as
+    author_mismatch evidence; a missing signal is unverifiable. Authorship is
+    authenticated BEFORE content, so a page that belongs to someone else can
+    never be verified for the claimed handle, and a quote that is not
+    verbatim in the page can never produce "verified".
     """
-    if page_author and page_author != handle:
-        return AUTHOR_MISMATCH, ""
+    if url_host not in X_HOSTS:
+        return UNVERIFIABLE, ""
     if url_handle and url_handle != handle:
         return AUTHOR_MISMATCH, ""
-    if not page_author and not url_handle:
+    if page_author and page_author != handle:
+        return AUTHOR_MISMATCH, ""
+    if url_handle != handle or page_author != handle:
         return UNVERIFIABLE, ""
     if found and quote_in_page and quote:
         return VERIFIED, quote[:1000]
@@ -107,22 +156,24 @@ class VouchGuard(gl.Contract):
     """On-chain vouch verification for GenLayer.
 
     Anyone can submit a claim URL (a public page that supposedly contains a
-    vouch/endorsement, e.g. an X status) plus the handle that is expected to
-    have made it. The contract:
+    vouch, e.g. an X status) plus the handle that is expected to have made
+    it. The contract:
 
     1. Keys results by (normalized URL, handle) - the same page can be checked
-       against different handles, and a failed/ambiguous check can be retried.
-       Only a "verified" verdict is final and immutable, so a first caller can
-       never permanently bind a page to the wrong handle.
-    2. Authenticates authorship structurally: the handle embedded in the page
-       URL (x.com/<handle>/status/...) is compared against the expected handle,
-       AND the author the page's own metadata attributes the post to (title,
-       twitter:creator, profile links, JSON-LD) is extracted independently of
-       the claim. Mismatch -> verdict "author_mismatch" is stored as evidence,
-       it never silently verifies.
-    3. Verifies the quote against the page: the LLM-extracted supporting quote
-       must appear verbatim in the fetched page text (deterministic containment
-       check). A quote that is not in the page cannot produce "verified".
+       against different handles independently, and a failed/ambiguous check
+       can be retried. Only a "verified" verdict is final and immutable.
+    2. Keeps reputation POSITIVE-ONLY: the per-handle aggregate counts solely
+       authenticated verified vouches. Failed submissions never decrement or
+       taint a handle, so an arbitrary caller cannot make another handle look
+       unclean by submitting checks destined to fail.
+    3. Requires AUTHENTICATED authorship for any verified result, from both
+       structural signals on the platform itself (see _decide): the URL path
+       handle AND the page's own HEAD-metadata author must both equal the
+       claimed handle, and the page must live on x.com/twitter.com - either
+       signal alone, or metadata from an arbitrary domain, never suffices.
+    4. Verifies the quote against the page: the LLM-extracted supporting
+       quote must appear verbatim in the fetched page text (deterministic
+       containment check). A hallucinated quote cannot produce "verified".
 
     The verdict, the exact supporting quote and the authorship evidence become
     immutable, publicly queryable on-chain history.
@@ -137,15 +188,15 @@ class VouchGuard(gl.Contract):
 
     def _analyze(self, claim_url: str, handle_norm: str) -> dict:
         def run() -> str:
-            # Structural authorship evidence lives in the HTML (title, meta,
-            # profile links), the readable post text in the rendered text.
+            # Structural authorship evidence lives in the HTML <head> (title,
+            # meta tags, profile links), the readable post text in the text.
             html = gl.get_webpage(claim_url, mode="html")
             text = gl.get_webpage(claim_url, mode="text")
 
             author_task = f"""
-You are extracting AUTHORSHIP metadata from a webpage. Do not judge content.
+You are extracting AUTHORSHIP metadata from a webpage's HEAD region. Do not judge content.
 
-Look ONLY at structural authorship signals in this HTML: the <title> tag
+Look ONLY at structural authorship signals in this HTML HEAD: the <title> tag
 (pattern "Display Name on X: ..."), meta tags (twitter:creator, author,
 og:title), profile/canonical links (x.com/<handle>, twitter.com/<handle>),
 and JSON-LD author fields.
@@ -155,7 +206,7 @@ Which handle AUTHORED this page? Reply with JSON only:
 If the page is an error/login/consent wall or shows no author metadata, use "".
 """
             author_raw = gl.exec_prompt(
-                author_task + "\n\nHTML (first 20000 chars):\n" + html[:20000]
+                author_task + "\n\nHEAD region (first 20000 chars):\n" + _head_region(html)[:20000]
             ).replace("```json", "").replace("```", "")
             author = json.loads(author_raw).get("author_handle", "")
 
@@ -215,6 +266,7 @@ be perfectly parsable by a JSON parser without errors.
             c = Check(
                 claim_url=claim_url.strip(),
                 handle=_norm_handle(expected_handle),
+                url_host=_host(claim_url),
                 url_handle="",
                 page_author="",
                 verdict="pending",
@@ -225,6 +277,7 @@ be perfectly parsable by a JSON parser without errors.
 
         url_handle = _url_handle(claim_url)
         res = self._analyze(claim_url, c.handle)
+        c.url_host = _host(claim_url)
         c.url_handle = url_handle
         c.page_author = _norm_handle(str(res.get("author_raw", "")))
         found = bool(res.get("found"))
@@ -232,14 +285,16 @@ be perfectly parsable by a JSON parser without errors.
         quote_in_page = bool(res.get("quote_in_page"))
 
         c.verdict, c.quote = _decide(
-            c.handle, url_handle, c.page_author, found, quote, quote_in_page
+            c.handle, c.url_host, url_handle, c.page_author, found, quote, quote_in_page
         )
 
         self.total += 1
-        s = self.stats.get_or_insert_default(c.handle)
-        s.attempts += 1
-        if c.verdict == VERIFIED:
-            s.verified += 1
+        # Positive-only reputation: failures never touch the handle aggregate,
+        # so an arbitrary caller cannot make another handle look unclean.
+        delta = _stat_delta(c.verdict)
+        if delta:
+            s = self.stats.get_or_insert_default(c.handle)
+            s.verified += delta
         return c.verdict
 
     @gl.public.view
@@ -251,6 +306,7 @@ be perfectly parsable by a JSON parser without errors.
         return {
             "claim_url": c.claim_url,
             "handle": c.handle,
+            "url_host": c.url_host,
             "url_handle": c.url_handle,
             "page_author": c.page_author,
             "verdict": c.verdict,
@@ -269,10 +325,12 @@ be perfectly parsable by a JSON parser without errors.
 
     @gl.public.view
     def get_handle_stats(self, handle: str) -> dict:
-        s = self.stats.get(_norm_handle(handle), HandleStat(0, 0))
+        h = _norm_handle(handle)
+        s = self.stats.get(h, HandleStat(verified=0))
         return {
-            "handle": _norm_handle(handle),
-            "attempts": s.attempts,
+            "handle": h,
             "verified": s.verified,
-            "clean": s.attempts > 0 and s.verified == s.attempts,
+            # "clean" is derived ONLY from positive evidence: third-party
+            # failed submissions can never flip this to unclean.
+            "clean": s.verified > 0,
         }
