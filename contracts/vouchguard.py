@@ -190,9 +190,9 @@ class VouchGuard(gl.Contract):
     def _analyze(self, claim_url: str, handle_norm: str) -> dict:
         def run() -> str:
             # Structural authorship evidence lives in the HTML <head> (title,
-            # meta tags, profile links), the readable post text in the text.
-            html = gl.get_webpage(claim_url, mode="html")
-            text = gl.get_webpage(claim_url, mode="text")
+            # meta tags, profile links); the readable post text in the body.
+            html = gl.nondet.web.render(claim_url, mode="html")
+            text = gl.nondet.web.render(claim_url, mode="text")
 
             author_task = f"""
 You are extracting AUTHORSHIP metadata from a webpage's HEAD region. Do not judge content.
@@ -206,7 +206,7 @@ Which handle AUTHORED this page? Reply with JSON only:
 {{"author_handle": "<handle without @, or empty string if the page carries no author metadata>"}}
 If the page is an error/login/consent wall or shows no author metadata, use "".
 """
-            author_raw = gl.exec_prompt(
+            author_raw = gl.nondet.exec_prompt(
                 author_task + "\n\nHEAD region (first 20000 chars):\n" + _head_region(html)[:20000]
             ).replace("```json", "").replace("```", "")
             author = json.loads(author_raw).get("author_handle", "")
@@ -248,7 +248,25 @@ be perfectly parsable by a JSON parser without errors.
                 sort_keys=True,
             )
 
-        return json.loads(gl.eq_principle_strict_eq(run))
+        def validator_fn(leader_res) -> bool:
+            # Independent verification: re-run the same extraction here and
+            # compare only the CONSENSUS-RELEVANT fields (authorship + found),
+            # never raw LLM prose. Classifying the winner with gl.vm.Return.
+            if not isinstance(leader_res, gl.vm.Return):
+                return False
+            try:
+                raw = leader_res.calldata
+                theirs = json.loads(raw if isinstance(raw, str) else str(raw))
+                mine = json.loads(run())
+            except Exception:
+                return False
+            return _norm_handle(str(theirs.get("author_raw", ""))) == _norm_handle(
+                str(mine.get("author_raw", ""))
+            ) and bool(theirs.get("found")) == bool(mine.get("found"))
+
+        # Nondeterministic block: web fetch + two LLM calls, validated by an
+        # independent re-run inside consensus (never strict_eq on LLM output).
+        return json.loads(gl.vm.run_nondet_unsafe(run, validator_fn))
 
     @gl.public.write
     def submit_check(self, claim_url: str, expected_handle: str) -> str:
