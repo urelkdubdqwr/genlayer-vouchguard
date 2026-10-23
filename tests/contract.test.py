@@ -199,6 +199,53 @@ def test_keying_and_retry_semantics():
     assert k("@alice") not in (k("@bob"),)
 
 
+# --- v4.3: graceful fetch failure + platform syndication path ----------------
+
+def test_fetch_failure_is_unverifiable_never_fabricated():
+    """x.com 403s datacenter runners: a failed fetch must yield a retryable
+    unverifiable with an evidence note — never a verdict from missing data,
+    and never an execution crash."""
+    v, q = vg._decide(**dict(GOOD, fetch_error="page_fetch:status: 403"))
+    assert v == UV and q == ""
+    v, q = vg._decide(**dict(GOOD, found=True, fetch_error="synd_fetch:boom"))
+    assert v == UV and q == ""  # even a claimed 'found' cannot verify unread pages
+
+
+def _synd_good():
+    return dict(
+        handle="jack", url_host="cdn.syndication.twimg.com", url_handle="",
+        page_author="jack", found=True, quote="just setting up my twttr",
+        quote_in_page=True, pin_ok=True,
+    )
+
+
+def test_syndication_path_verifies_on_payload_authorship():
+    v, q = vg._decide(**_synd_good())
+    assert v == V and q == "just setting up my twttr"
+
+
+def test_syndication_pin_and_author_gates():
+    g = _synd_good()
+    # id in URL != id in payload: claim swapped onto another post -> unverifiable
+    assert vg._decide(**dict(g, pin_ok=False))[0] == UV
+    # payload says someone else authored it -> author_mismatch evidence
+    assert vg._decide(**dict(g, page_author="bob"))[0] == AM
+    # missing authorship signal -> unverifiable
+    assert vg._decide(**dict(g, page_author=""))[0] == UV
+    # no verbatim quote in payload -> not_found
+    assert vg._decide(**dict(g, quote_in_page=False))[0] == NF
+    # look-alike syndication host never reaches the syndication branch
+    g2 = dict(g); g2["url_host"] = "cdn.syndication.twimg.com.evil.net"
+    assert vg._decide(**g2)[0] == UV
+
+
+def test_synd_url_id_extraction():
+    u = "https://cdn.syndication.twimg.com/tweet-result?id=20&lang=en&token=x"
+    assert vg._synd_id(u) == "20"
+    assert vg._synd_id("https://cdn.syndication.twimg.com/tweet-result") == ""
+    assert vg._synd_id("https://cdn.syndication.twimg.com/tweet-result?id=40&token=x") == "40"
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

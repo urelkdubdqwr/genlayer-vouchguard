@@ -12,6 +12,10 @@ AUTHOR_MISMATCH = "author_mismatch"
 UNVERIFIABLE = "unverifiable"
 
 X_HOSTS = ("x.com", "twitter.com", "mobile.x.com", "mobile.twitter.com")
+# The platform's own syndication CDN: authoritative tweet JSON that is
+# fetchable from server runners (the x.com HTML page itself 403s datacenter
+# IP ranges). Same trust root: content is served by twitter's own infra.
+SYND_HOSTS = ("cdn.syndication.twimg.com",)
 
 
 @allow_storage
@@ -30,6 +34,7 @@ class Check:
     page_author: str  # author declared by the page's own HEAD metadata, "" if absent
     verdict: str  # verified | not_found | author_mismatch | unverifiable
     quote: str  # exact quote from the page (only when verified)
+    note: str  # evidence note, e.g. fetch failure reason ("" otherwise)
     attempts: u256
 
 
@@ -75,6 +80,13 @@ def _url_handle(url: str) -> str:
     return first
 
 
+def _synd_id(url: str) -> str:
+    """Tweet id param from a cdn.syndication.twimg.com/tweet-result?id=<n>&... URL."""
+    u = _norm_url(url)
+    i = u.find("id=")
+    return u[i + 3:].split("&", 1)[0] if i >= 0 else ""
+
+
 def _norm_text(s: str) -> str:
     return " ".join((s or "").lower().split())
 
@@ -115,6 +127,32 @@ def _stat_delta(verdict: str) -> u256:
     return 1 if verdict == VERIFIED else 0
 
 
+def _vouch_task(handle_norm: str, text: str) -> str:
+    """Shared vouch-content prompt for both authorship paths."""
+    return f"""
+You are verifying a public endorsement (\"vouch\").
+The page author is @{handle_norm}.
+
+Decide whether this page text contains a post written by @{handle_norm} that
+publicly vouches for, endorses or attests to someone's trustworthiness.
+Do not treat a MENTION of @{handle_norm} (someone else quoting them) as
+authorship - only their own post counts.
+
+Page text:
+{text[:30000]}
+
+Respond in JSON:
+{{
+    \"found\": bool,
+    \"quote\": str
+}}
+\"found\" is true only if the text actually contains such a post by
+@{handle_norm}, and \"quote\" is the exact sentence copied from the page (or \"\"
+if not found). It is mandatory that you respond only using the JSON format
+above, nothing else.
+"""
+
+
 def _decide(
     handle: str,
     url_host: str,
@@ -123,6 +161,8 @@ def _decide(
     found: bool,
     quote: str,
     quote_in_page: bool,
+    fetch_error: str = "",
+    pin_ok: bool = False,
 ) -> tuple:
     """Deterministic verdict logic (pure, unit-tested).
 
@@ -140,6 +180,23 @@ def _decide(
     never be verified for the claimed handle, and a quote that is not
     verbatim in the page can never produce "verified".
     """
+    if fetch_error:
+        # The platform refused the fetch (e.g. 403 / runner blocked): no
+        # result may be written from a page we could not read. Retryable
+        # unverifiable — never a fabricated verdict from missing evidence.
+        return UNVERIFIABLE, ""
+    if url_host in SYND_HOSTS:
+        # Syndication path: authorship is the payload's own user.screen_name
+        # served by the platform CDN; the tweet id in the URL must pin the
+        # payload (id in URL == id in payload) so the claim cannot be
+        # swapped onto a different post.
+        if page_author and page_author != handle:
+            return AUTHOR_MISMATCH, ""
+        if page_author != handle or not pin_ok:
+            return UNVERIFIABLE, ""
+        if found and quote_in_page and quote:
+            return VERIFIED, quote[:1000]
+        return NOT_FOUND, ""
     if url_host not in X_HOSTS:
         return UNVERIFIABLE, ""
     if url_handle and url_handle != handle:
@@ -189,10 +246,21 @@ class VouchGuard(gl.Contract):
 
     def _analyze(self, claim_url: str, handle_norm: str) -> dict:
         def run() -> str:
+            host = _host(claim_url)
+            if host in SYND_HOSTS:
+                return _run_synd(claim_url, handle_norm)
+
             # Structural authorship evidence lives in the HTML <head> (title,
             # meta tags, profile links); the readable post text in the body.
-            html = gl.nondet.web.render(claim_url, mode="html")
-            text = gl.nondet.web.render(claim_url, mode="text")
+            try:
+                html = gl.nondet.web.render(claim_url, mode="html")
+                text = gl.nondet.web.render(claim_url, mode="text")
+            except Exception as e:
+                return json.dumps({
+                    "fetch_error": "page_fetch:" + str(e)[:60],
+                    "author_raw": "", "found": False, "quote": "",
+                    "quote_in_page": False, "pin_ok": False,
+                }, sort_keys=True)
 
             author_task = f"""
 You are extracting AUTHORSHIP metadata from a webpage's HEAD region. Do not judge content.
@@ -211,31 +279,7 @@ If the page is an error/login/consent wall or shows no author metadata, use "".
             ).replace("```json", "").replace("```", "")
             author = json.loads(author_raw).get("author_handle", "")
 
-            vouch_task = f"""
-You are verifying a public endorsement ("vouch").
-The page author is @{handle_norm}.
-
-Decide whether this page text contains a post written by @{handle_norm} that
-publicly vouches for, endorses or attests to someone's trustworthiness.
-Do not treat a MENTION of @{handle_norm} (someone else quoting them) as
-authorship - only their own post counts.
-
-Page text:
-{text[:30000]}
-
-Respond in JSON:
-{{
-    "found": bool,
-    "quote": str
-}}
-"found" is true only if the text actually contains such a post by
-@{handle_norm}, and "quote" is the exact sentence copied from the page (or ""
-if not found). It is mandatory that you respond only using the JSON format
-above, nothing else. Don't include any other words or characters, your output
-must be only JSON without any formatting prefix or suffix. This result should
-be perfectly parsable by a JSON parser without errors.
-"""
-            vouch_raw = gl.exec_prompt(vouch_task).replace("```json", "").replace("```", "")
+            vouch_raw = gl.nondet.exec_prompt(_vouch_task(handle_norm, text)).replace("```json", "").replace("```", "")
             vouch = json.loads(vouch_raw)
 
             return json.dumps(
@@ -244,9 +288,38 @@ be perfectly parsable by a JSON parser without errors.
                     "found": bool(vouch.get("found")),
                     "quote": str(vouch.get("quote", "")),
                     "quote_in_page": _quote_in_page(str(vouch.get("quote", "")), text),
+                    "fetch_error": "",
+                    "pin_ok": False,
                 },
                 sort_keys=True,
             )
+
+        def _run_synd(synd_url: str, h_norm: str) -> str:
+            # Authoritative tweet JSON from the platform's own CDN.
+            sid = _synd_id(synd_url)
+            try:
+                payload = json.loads(gl.nondet.web.render(synd_url, mode="text"))
+            except Exception as e:
+                return json.dumps({
+                    "fetch_error": "synd_fetch:" + str(e)[:60],
+                    "author_raw": "", "found": False, "quote": "",
+                    "quote_in_page": False, "pin_ok": False,
+                }, sort_keys=True)
+            author = str((payload.get("user") or {}).get("screen_name", ""))
+            text = str(payload.get("text", ""))
+            pid = str(payload.get("id_str", "") or payload.get("id", ""))
+            pin_ok = bool(sid) and sid == pid
+
+            vouch_raw = gl.nondet.exec_prompt(_vouch_task(h_norm, text)).replace("```json", "").replace("```", "")
+            vouch = json.loads(vouch_raw)
+            return json.dumps({
+                "author_raw": author,
+                "found": bool(vouch.get("found")),
+                "quote": str(vouch.get("quote", "")),
+                "quote_in_page": _quote_in_page(str(vouch.get("quote", "")), text),
+                "fetch_error": "",
+                "pin_ok": pin_ok,
+            }, sort_keys=True)
 
         def validator_fn(leader_res) -> bool:
             # Independent verification: re-run the same extraction here and
@@ -271,40 +344,43 @@ be perfectly parsable by a JSON parser without errors.
     @gl.public.write
     def submit_check(self, claim_url: str, expected_handle: str) -> str:
         key = _norm_url(claim_url) + "|" + _norm_handle(expected_handle)
+        handle_norm = _norm_handle(expected_handle)
         existing = self.checks.get(key)
-        if existing is not None:
-            if existing.verdict == VERIFIED:
-                # A verified verdict is final; re-binding a verified page to
-                # another check is pointless, other handles stay independent.
-                raise gl.vm.UserError("Already verified for this handle")
-            # notFound/author_mismatch/unverifiable are RETRYABLE: a first
-            # caller can never permanently bind a page to a wrong handle.
-            c = existing
-            c.attempts += 1
-        else:
-            c = Check(
+        if existing is not None and existing.verdict == VERIFIED:
+            # A verified verdict is final; re-binding a verified page to
+            # another check is pointless, other handles stay independent.
+            raise gl.vm.UserError("Already verified for this handle")
+        if existing is None:
+            self.checks[key] = Check(
                 claim_url=claim_url.strip(),
-                handle=_norm_handle(expected_handle),
+                handle=handle_norm,
                 url_host=_host(claim_url),
                 url_handle="",
                 page_author="",
                 verdict="pending",
                 quote="",
-                attempts=1,
+                note="",
+                attempts=0,
             )
-            self.checks[key] = c
 
         url_handle = _url_handle(claim_url)
-        res = self._analyze(claim_url, c.handle)
+        res = self._analyze(claim_url, handle_norm)
+        # Refresh the storage handle AFTER the nondet block: a TreeMap proxy
+        # fetched before it writes into a stale snapshot (the record would
+        # keep verdict="pending" forever). Re-fetch, then mutate.
+        c = self.checks[key]
+        c.attempts += 1  # notFound/author_mismatch/unverifiable are RETRYABLE
         c.url_host = _host(claim_url)
         c.url_handle = url_handle
         c.page_author = _norm_handle(str(res.get("author_raw", "")))
         found = bool(res.get("found"))
         quote = str(res.get("quote", ""))
         quote_in_page = bool(res.get("quote_in_page"))
+        c.note = str(res.get("fetch_error", ""))[:120]
 
         c.verdict, c.quote = _decide(
-            c.handle, c.url_host, url_handle, c.page_author, found, quote, quote_in_page
+            c.handle, c.url_host, url_handle, c.page_author, found, quote,
+            quote_in_page, fetch_error=c.note, pin_ok=bool(res.get("pin_ok")),
         )
 
         self.total += 1
@@ -330,6 +406,7 @@ be perfectly parsable by a JSON parser without errors.
             "page_author": c.page_author,
             "verdict": c.verdict,
             "quote": c.quote,
+            "note": c.note,
             "attempts": c.attempts,
         }
 

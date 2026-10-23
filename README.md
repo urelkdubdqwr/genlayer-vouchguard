@@ -19,6 +19,19 @@ The verdict lands in contract state as immutable history: no screenshots to edit
   check that came back `not_found` / `author_mismatch` / `unverifiable` can be
   retried (each attempt is counted). Only a **`verified` verdict is final** —
   so a first caller can never permanently bind a page to the wrong handle.
+- **Platform syndication path (fetchable authorship).** The `x.com` HTML page
+  itself 403s datacenter runners, so verified authorship also comes from the
+  platform's own syndication CDN: submit
+  `https://cdn.syndication.twimg.com/tweet-result?id=<tweet>&lang=en&token=x`
+  as the claim URL. The tweet JSON is served by twitter's own infrastructure,
+  and a verified result requires the payload's `user.screen_name` to equal the
+  claimed handle, the tweet `id` in the URL to pin the payload's `id_str`
+  (the claim cannot be swapped onto another post), and the quote to be verbatim
+  in the payload text.
+- **A refused fetch is evidence, never a verdict.** If the platform blocks the
+  fetch (HTTP 403 from runner IP ranges, dead URL), the check is stored as a
+  retryable `unverifiable` with the failure reason in its `note` — nothing is
+  fabricated from a page nobody could read, and nothing crashes.
 - **Verified requires AUTHENTICATED authorship, from three conditions (all of
   them, no exceptions):**
   1. the claim page must live on the X/Twitter platform itself (`x.com` /
@@ -36,7 +49,8 @@ The verdict lands in contract state as immutable history: no screenshots to edit
   missing signal stores `unverifiable`. Both are checked BEFORE any content
   is judged.
 - **The quote must be in the page.** The contract renders the page twice
-  (`mode="html"` for metadata, `mode="text"` for content). The LLM that flags a
+  (`mode="html"` for metadata, `mode="text"` for content; the syndication path
+  renders once). The LLM that flags a
   vouch must return the exact supporting sentence, and a deterministic
   containment check (`quote ∈ fetched text`, case/whitespace-insensitive) has
   to pass — a hallucinated or reformulated quote can never produce `verified`.

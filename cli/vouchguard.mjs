@@ -32,9 +32,17 @@ const handle = normalizeHandle(args.handle);
 // Client-side mirror of the contract's verdict gate: refuse to even submit a
 // claim whose authorship cannot be authenticated before spending gas.
 const uh = urlHandle(args.url);
-if (cmd === "check") {
+// Platform syndication CDN: the platform's own tweet JSON (fetchable where the
+// x.com HTML page 403s runners). Authorship is authenticated from the payload.
+let synd = false;
+try {
+  const u = new URL(args.url);
+  synd = /(^|\.)cdn\.syndication\.twimg\.com$/i.test(u.hostname)
+    && u.pathname.includes("tweet-result") && u.searchParams.has("id");
+} catch {}
+if (cmd === "check" && !synd) {
   if (!uh) {
-    console.error("unverifiable: authorship must be authenticated on x.com/twitter.com — metadata on an arbitrary domain can never verify");
+    console.error("unverifiable: authorship must be authenticated on x.com/twitter.com (or a platform syndication URL) — metadata on an arbitrary domain can never verify");
     process.exit(2);
   }
   if (uh !== handle) {
