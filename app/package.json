@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "genlayer-js": "0.8.0",
-    "lucide-vue-next": "^0.503.0",
+    "lucide-vue-next": "^1.0.0",
     "vue": "^3.4.37"
   },
   "devDependencies": {
