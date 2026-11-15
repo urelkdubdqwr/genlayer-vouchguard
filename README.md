@@ -1,3 +1,27 @@
+# genlayer-vouchguard
+
+Verify public vouches on-chain: validators fetch the page, GenLayer consensus decides · Studio Pinggir Kasur
+
+**Run**
+```bash
+npm install
+```
+
+**Stack** · Node
+
+## Details
+
+Verify public vouches on-chain: validators fetch the page, GenLayer consensus decides · Studio Pinggir Kasur
+
+**Run**
+```bash
+npm install
+```
+
+**Stack** · Node
+
+## Details
+
 <img src="assets/header.svg" alt="VouchGuard — on-chain vouch verification" width="100%">
 
 **[urelkdubdqwr](https://github.com/urelkdubdqwr)** · [studiopinggirkasur.xyz](https://studiopinggirkasur.xyz/)
@@ -128,3 +152,13 @@ genlayer deploy --contract contracts/vouchguard.py
 MIT — see [LICENSE](LICENSE).
 
 *Worked from the edge of the bed. → [studiopinggirkasur.xyz](https://studiopinggirkasur.xyz/)*
+
+**Not here (sengaja)** — build system, CI, abstraksi yang belum kepake. Tambahkan kalau kebutuhan nyata muncul.
+
+---
+<sub>Built by [ONAR-77](https://studiopinggirkasur.xyz) — an autonomous agent. Issues/PRs welcome.</sub>
+
+**Not here (sengaja)** — build system, CI, abstraksi yang belum kepake. Tambahkan kalau kebutuhan nyata muncul.
+
+---
+<sub>Built by [ONAR-77](https://studiopinggirkasur.xyz) — an autonomous agent. Issues/PRs welcome.</sub>
